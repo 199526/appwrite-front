@@ -1,73 +1,56 @@
-FROM composer:2.0 as step0
+FROM ubuntu:18.04 AS builder
+
+LABEL maintainer="team@appwrite.io"
 
 ARG TESTING=false
-ENV TESTING=$TESTING
+
+ENV TZ=Asia/Tel_Aviv \
+    DEBIAN_FRONTEND=noninteractive \
+    PHP_VERSION=7.4 \
+    PHP_REDIS_VERSION=5.2.1
+
+RUN \
+  apt-get update && \
+  apt-get install -y --no-install-recommends --no-install-suggests ca-certificates software-properties-common wget git openssl && \
+  LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php && \
+  apt-get update && \
+  apt-get install -y --no-install-recommends --no-install-suggests make php$PHP_VERSION php$PHP_VERSION-dev zip unzip php$PHP_VERSION-zip && \
+  # Redis Extension
+  wget -q https://github.com/phpredis/phpredis/archive/$PHP_REDIS_VERSION.tar.gz && \
+  tar -xf $PHP_REDIS_VERSION.tar.gz && \
+  cd phpredis-$PHP_REDIS_VERSION && \
+  phpize$PHP_VERSION && \
+  ./configure && \
+  make && \
+  # Composer
+  wget https://getcomposer.org/composer.phar && \
+  chmod +x ./composer.phar && \
+  mv ./composer.phar /usr/bin/composer && \
+  #Brotli
+  cd / && \
+  git clone https://github.com/eustas/ngx_brotli.git && \
+  cd ngx_brotli && git submodule update --init && cd ..
 
 WORKDIR /usr/local/src/
 
-COPY composer.lock /usr/local/src/
-COPY composer.json /usr/local/src/
+# Updating PHP Dependencies and Auto-loading...
+
+ENV TESTING=$TESTING
+
+COPY composer.* /usr/local/src/
 
 RUN composer update --ignore-platform-reqs --optimize-autoloader \
     --no-plugins --no-scripts --prefer-dist \
     `if [ "$TESTING" != "true" ]; then echo "--no-dev"; fi`
 
-FROM php:7.4-cli as step1
-
-ENV TZ=Asia/Tel_Aviv \
-    DEBIAN_FRONTEND=noninteractive \
-    PHP_REDIS_VERSION=5.3.0 \
-    PHP_SWOOLE_VERSION=4.5.2 \
-    PHP_XDEBUG_VERSION=sdebug_2_9-beta
-
-RUN \
-  apt-get update && \
-  apt-get install -y --no-install-recommends --no-install-suggests ca-certificates software-properties-common wget git openssl make zip unzip libbrotli-dev libz-dev
-  
-RUN docker-php-ext-install sockets
-
-RUN \
-  # Redis Extension
-  wget -q https://github.com/phpredis/phpredis/archive/$PHP_REDIS_VERSION.tar.gz && \
-  tar -xf $PHP_REDIS_VERSION.tar.gz && \
-  cd phpredis-$PHP_REDIS_VERSION && \
-  phpize && \
-  ./configure && \
-  make && make install && \
-  cd .. && \
-  ## Swoole Extension
-  git clone https://github.com/swoole/swoole-src.git && \
-  cd swoole-src && \
-  git checkout v$PHP_SWOOLE_VERSION && \
-  phpize && \
-  ./configure --enable-sockets --enable-http2 && \
-  make && make install && \
-  cd ..
-  ## XDebug Extension
-  # git clone https://github.com/swoole/sdebug.git && \
-  # cd sdebug && \
-  # git checkout $PHP_XDEBUG_VERSION && \
-  # phpize && \
-  # ./configure --enable-xdebug && \
-  # make clean && make && make install
-  # cd .. && \
-  # Meminfo Extension
-  # git clone https://github.com/BitOne/php-meminfo.git && \
-  # cd php-meminfo && \
-  # git checkout v1.0.5 && \
-  # cd extension/php7 && \
-  # phpize && \
-  # ./configure --enable-meminfo && \
-  # make && make install
-
-FROM php:7.4-cli as final
-
+FROM ubuntu:18.04
 LABEL maintainer="team@appwrite.io"
 
 ARG VERSION=dev
 
 ENV TZ=Asia/Tel_Aviv \
     DEBIAN_FRONTEND=noninteractive \
+    PHP_VERSION=7.4 \
     _APP_ENV=production \
     _APP_DOMAIN=localhost \
     _APP_DOMAIN_TARGET=localhost \
@@ -97,79 +80,103 @@ ENV TZ=Asia/Tel_Aviv \
 #ENV _APP_SMTP_USERNAME ''
 #ENV _APP_SMTP_PASSWORD ''
 
+COPY --from=builder /phpredis-5.2.1/modules/redis.so /usr/lib/php/20190902/
+COPY --from=builder /phpredis-5.2.1/modules/redis.so /usr/lib/php/20190902/
+COPY --from=builder /ngx_brotli /ngx_brotli
+
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
 RUN \
   apt-get update && \
-  apt-get install -y --no-install-recommends --no-install-suggests webp certbot htop procps \
-  libonig-dev libcurl4-gnutls-dev libmagickwand-dev libyaml-dev libbrotli-dev libz-dev && \
-  pecl install imagick yaml && \ 
-  docker-php-ext-enable imagick yaml
+  apt-get install -y --no-install-recommends --no-install-suggests wget ca-certificates software-properties-common build-essential libpcre3-dev zlib1g-dev libssl-dev openssl gnupg htop supervisor && \
+  LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php && \
+  add-apt-repository universe && \
+  add-apt-repository ppa:certbot/certbot && \
+  apt-get update && \
+  apt-get install -y --no-install-recommends --no-install-suggests php$PHP_VERSION php$PHP_VERSION-fpm \
+  php$PHP_VERSION-mysqlnd php$PHP_VERSION-curl php$PHP_VERSION-imagick php$PHP_VERSION-mbstring php$PHP_VERSION-dom certbot && \
+  # Nginx
+  wget http://nginx.org/download/nginx-1.19.0.tar.gz && \
+  tar -xzvf nginx-1.19.0.tar.gz && rm nginx-1.19.0.tar.gz && \
+  cd nginx-1.19.0 && \
+  ./configure --prefix=/usr/share/nginx \
+    --sbin-path=/usr/sbin/nginx \
+    --modules-path=/usr/lib/nginx/modules \
+    --conf-path=/etc/nginx/nginx.conf \
+    --error-log-path=/var/log/nginx/error.log \
+    --http-log-path=/var/log/nginx/access.log \
+    --pid-path=/run/nginx.pid \
+    --lock-path=/var/lock/nginx.lock \
+    --user=www-data \
+    --group=www-data \
+    --build=Ubuntu \
+    --with-http_gzip_static_module \
+    --with-http_ssl_module \
+    --with-http_v2_module \
+    --add-module=/ngx_brotli && \
+  make && \
+  make install && \
+  rm -rf ../nginx-1.19.0 && \
+  # Redis Extension
+  echo extension=redis.so >> /etc/php/$PHP_VERSION/fpm/conf.d/redis.ini && \
+  echo extension=redis.so >> /etc/php/$PHP_VERSION/cli/conf.d/redis.ini && \
+  # Cleanup
+  cd ../ && \
+  apt-get purge -y --auto-remove wget software-properties-common build-essential libpcre3-dev zlib1g-dev libssl-dev gnupg && \
+  apt-get clean && \
+  rm -rf /ngx_brotli && \
+  rm -rf /var/lib/apt/lists/*
 
-RUN docker-php-ext-install sockets curl opcache pdo pdo_mysql
+# Set Upload Limit (default to 100MB)
+RUN echo "upload_max_filesize = ${_APP_STORAGE_LIMIT}" >> /etc/php/$PHP_VERSION/fpm/conf.d/appwrite.ini
+RUN echo "post_max_size = ${_APP_STORAGE_LIMIT}" >> /etc/php/$PHP_VERSION/fpm/conf.d/appwrite.ini
+RUN echo "opcache.preload_user=www-data" >> /etc/php/$PHP_VERSION/fpm/conf.d/appwrite.ini
+RUN echo "opcache.preload=/usr/src/code/app/preload.php" >> /etc/php/$PHP_VERSION/fpm/conf.d/appwrite.ini
+RUN echo "opcache.enable_cli = 1" >> /etc/php/$PHP_VERSION/fpm/conf.d/appwrite.ini
 
-WORKDIR /usr/src/code
+# Add logs file
+RUN echo "" >> /var/log/appwrite.log
 
-COPY --from=step0 /usr/local/src/vendor /usr/src/code/vendor
-COPY --from=step1 /usr/local/lib/php/extensions/no-debug-non-zts-20190902/swoole.so /usr/local/lib/php/extensions/no-debug-non-zts-20190902/
-COPY --from=step1 /usr/local/lib/php/extensions/no-debug-non-zts-20190902/redis.so /usr/local/lib/php/extensions/no-debug-non-zts-20190902/
-# COPY --from=step1 /usr/local/lib/php/extensions/no-debug-non-zts-20190902/xdebug.so /usr/local/lib/php/extensions/no-debug-non-zts-20190902/
-# COPY --from=step1 /usr/local/lib/php/extensions/no-debug-non-zts-20190902/meminfo.so /usr/local/lib/php/extensions/no-debug-non-zts-20190902/
+# Nginx Configuration (with self-signed ssl certificates)
+COPY ./docker/nginx.conf.template /etc/nginx/nginx.conf.template
+COPY ./docker/ssl/cert.pem /etc/nginx/ssl/cert.pem
+COPY ./docker/ssl/key.pem /etc/nginx/ssl/key.pem
 
-# Add Source Code
+# PHP Configuration
+RUN mkdir -p /var/run/php
+COPY ./docker/www.conf /etc/php/$PHP_VERSION/fpm/pool.d/www.conf
+
+# Add PHP Source Code
 COPY ./app /usr/src/code/app
 COPY ./bin /usr/local/bin
 COPY ./docs /usr/src/code/docs
 COPY ./public /usr/src/code/public
 COPY ./src /usr/src/code/src
+COPY --from=builder /usr/local/src/vendor /usr/src/code/vendor
 
-# Set Volumes
 RUN mkdir -p /storage/uploads && \
     mkdir -p /storage/cache && \
     mkdir -p /storage/config && \
     mkdir -p /storage/certificates && \
-    mkdir -p /storage/debug && \
     chown -Rf www-data.www-data /storage/uploads && chmod -Rf 0755 /storage/uploads && \
     chown -Rf www-data.www-data /storage/cache && chmod -Rf 0755 /storage/cache && \
     chown -Rf www-data.www-data /storage/config && chmod -Rf 0755 /storage/config && \
-    chown -Rf www-data.www-data /storage/certificates && chmod -Rf 0755 /storage/certificates && \
-    chown -Rf www-data.www-data /storage/debug && chmod -Rf 0755 /storage/debug
+    chown -Rf www-data.www-data /storage/certificates && chmod -Rf 0755 /storage/certificates
+
+# Supervisord Conf
+COPY ./docker/supervisord.conf /etc/supervisord.conf
 
 # Executables
 RUN chmod +x /usr/local/bin/start
 RUN chmod +x /usr/local/bin/doctor
 RUN chmod +x /usr/local/bin/migrate
 RUN chmod +x /usr/local/bin/test
-RUN chmod +x /usr/local/bin/schedule
-RUN chmod +x /usr/local/bin/worker-audits
-RUN chmod +x /usr/local/bin/worker-certificates
-RUN chmod +x /usr/local/bin/worker-deletes
-RUN chmod +x /usr/local/bin/worker-mails
-RUN chmod +x /usr/local/bin/worker-tasks
-RUN chmod +x /usr/local/bin/worker-usage
-RUN chmod +x /usr/local/bin/worker-webhooks
 
 # Letsencrypt Permissions
 RUN mkdir -p /etc/letsencrypt/live/ && chmod -Rf 755 /etc/letsencrypt/live/
 
-# Enable Extensions
-RUN echo extension=swoole.so >> /usr/local/etc/php/conf.d/swoole.ini
-RUN echo extension=redis.so >> /usr/local/etc/php/conf.d/redis.ini
-# RUN echo zend_extension=xdebug.so >> /usr/local/etc/php/conf.d/xdebug.ini
-# RUN echo extension=meminfo.so >> /usr/local/etc/php/conf.d/meminfo.ini
-
-RUN echo "opcache.preload_user=www-data" >> /usr/local/etc/php/conf.d/appwrite.ini
-RUN echo "opcache.preload=/usr/src/code/app/preload.php" >> /usr/local/etc/php/conf.d/appwrite.ini
-RUN echo "opcache.enable_cli = 1" >> /usr/local/etc/php/conf.d/appwrite.ini
-# RUN echo "xdebug.profiler_enable = 1" >> /usr/local/etc/php/conf.d/appwrite.ini
-# RUN echo "xdebug.profiler_output_dir = /tmp/" >> /usr/local/etc/php/conf.d/appwrite.ini
-# RUN echo "xdebug.profiler_enable_trigger = 1" >> /usr/local/etc/php/conf.d/appwrite.ini
-# RUN echo "xdebug.trace_format = 1" >> /usr/local/etc/php/conf.d/appwrite.ini
-
 EXPOSE 80
 
-#, "-dxdebug.auto_trace=1"
-#, "-dxdebug.profiler_enable=1"
-#, "-dopcache.preload=opcache.preload=/usr/src/code/app/preload.php"
+WORKDIR /usr/src/code
 
-CMD [ "php", "app/server.php", "-dopcache.preload=opcache.preload=/usr/src/code/app/preload.php" ]
+CMD ["/bin/bash", "/usr/local/bin/start"]
