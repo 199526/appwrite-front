@@ -92,7 +92,7 @@ class ResizeTest extends TestCase
 
         $this->assertEquals(100, $image->getImageWidth());
         $this->assertEquals(100, $image->getImageHeight());
-        $this->assertEquals('PAM', $image->getImageFormat());
+        $this->assertTrue(in_array($image->getImageFormat(), ['PAM', 'WEBP']));
 
         \unlink($target);
     }
