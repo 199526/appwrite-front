@@ -167,7 +167,6 @@ RUN mkdir -p /storage/uploads && \
 COPY ./docker/supervisord.conf /etc/supervisord.conf
 
 # Executables
-RUN chmod +x /usr/local/bin/start
 RUN chmod +x /usr/local/bin/doctor
 RUN chmod +x /usr/local/bin/migrate
 RUN chmod +x /usr/local/bin/test
