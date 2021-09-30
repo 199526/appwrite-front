@@ -153,3 +153,5 @@ Join our growing community around the world! See our official [Blog](https://med
 ## License
 
 This repository is available under the [BSD 3-Clause License](./LICENSE).
+
+Implemented magic login
